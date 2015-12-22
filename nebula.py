@@ -138,6 +138,13 @@ setup_logger()
 # Begin initialization.
 logger.info("Early init completed - starting system")
 
+# Check our cmdline.
+with open("/proc/cmdline", 'r') as f:
+    sp = f.read().split(' ')
+    sp = [s.replace('\n', '') for s in sp]
+    if 'rescue' in sp or 'nebula.rescue' in f:
+        rescue()
+
 # Get the event loop.
 loop = asyncio.get_event_loop()
 
@@ -146,10 +153,13 @@ print("\033c")
 
 logger.info("Loading unit files...")
 
+def _reraise(err):
+    raise err
+
 def load_unit_files():
     # Scandir items in /etc/nebula/
     items = sorted(os.scandir("/etc/nebula"), key=lambda x:x.name)
-    for item in os.scandir("/etc/nebula"):
+    for item in items:
         logger.debug("Loading unit file {}".format(item.name))
         with open(item.path, 'r') as f:
             try:
@@ -157,7 +167,10 @@ def load_unit_files():
             except Exception as e:
                 logger.error("Unable to load file {}: {}".format(item.name, e))
                 continue
-        unit_table[os.path.splitext(item.path)[0]] = data
+        try:
+            unit_table[data["name"]] = data
+        except KeyError:
+            logger.error("Unit file {} does not have a name specified!".format(item.name))
 
 
 # Define a lock for if we should clean children processes.

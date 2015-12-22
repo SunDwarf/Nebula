@@ -1,0 +1,8 @@
+# Udev unit.
+# This is prefixed with 000- as it must be loaded before anything else.
+
+name: udev
+description: udev - hardware device manager
+
+commands:
+  start: /usr/bin/udevd
