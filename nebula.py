@@ -150,6 +150,7 @@ logger.info("Loading unit files...")
 
 def load_unit_files():
     # Scandir items in /etc/nebula/
+    items = sorted(os.scandir("/etc/nebula"), key=lambda x:x.name)
     for item in os.scandir("/etc/nebula"):
         logger.debug("Loading unit file {}".format(item.name))
         with open(item.path, 'r') as f:
