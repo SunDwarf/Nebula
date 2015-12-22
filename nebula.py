@@ -35,6 +35,10 @@ except ImportError:
     print("Nebula - Setproctitle is not installed. Recommendation: install it.")
 else:
     setproctitle.setproctitle("nebula")
+import ctypes
+
+# Load libc.
+libc = ctypes.CDLL("libc.so.6")
 
 # The process table is a master table for every process spawned by Nebula.
 # It is key-value of service => list of processes spawned.
@@ -155,7 +159,18 @@ with open("/proc/cmdline", 'r') as f:
 loop = asyncio.get_event_loop()
 
 # Clear screen
-print("\033c")
+print("\033c", end='')
+
+# region Setup
+
+logger.info("Setting hostname...")
+with open("/etc/hostname", 'a+') as f:
+    data = f.read().encode()
+    length = len(data)
+    libc.sethostname(data, ctypes.c_size_t(length))
+
+
+# endregion
 
 logger.info("Loading unit files...")
 
