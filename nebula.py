@@ -36,6 +36,7 @@ except ImportError:
 else:
     setproctitle.setproctitle("nebula")
 import ctypes
+import signal
 
 # Load libc.
 libc = ctypes.CDLL("libc.so.6")
@@ -154,7 +155,13 @@ with open("/proc/cmdline", 'r') as f:
     sp = [s.replace('\n', '') for s in sp]
     if 'rescue' in sp or 'nebula.rescue' in sp:
         rescue()
-
+    else:
+        for item in sp:
+            if 'nebula.loglevel' in item:
+                i = item.split('=')
+                if len(i) >= 2:
+                    if hasattr(logging, i[1]):
+                        logger.setLevel(getattr(logging, i[1]))
 # Get the event loop.
 loop = asyncio.get_event_loop()
 
@@ -201,22 +208,20 @@ def load_unit_files():
 # Define a lock for if we should clean children processes.
 ch_lock = asyncio.Lock()
 
-async def clean_children(sleeptime=5):
+def clean_children(*args, **kwargs):
     # Clean up surrogate children.
     # This is for things like dhcpcd and other processes that fork to background without asking us permission.
-
-    cleaning = True
+    # Loop until we can't clean any more children.
+    logger.debug("Called signal handler")
     while True:
-        await ch_lock.acquire()
-        # Loop until we can't clean any more children.
-        while cleaning:
-            try:
-                os.wait()
-            except ChildProcessError:
-                # No more children
-                ch_lock.release()
-            # We do this every 5 seconds or so.
-            await asyncio.sleep(sleeptime)
+        try:
+            reap = os.waitpid(-1, os.WNOHANG)
+            logger.debug("Reaped {}".format(reap))
+        except ChildProcessError:
+            # No more children to terminate
+            break
+
+
 
 # Try and load unit files.
 try:
@@ -279,9 +284,9 @@ async def main():
     # Add signal handlers.
     loop.add_signal_handler(1, hup_handler)
     loop.add_signal_handler(10, hup_handler)
+    loop.add_signal_handler(signal.SIGCHLD, clean_children)
 
     await run_units()
-    loop.create_task(clean_children())
 
 # Begin Nebula daemon.
 loop.create_task(main())
