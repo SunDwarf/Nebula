@@ -163,9 +163,13 @@ def _reraise(err):
     raise err
 
 def load_unit_files():
-    # Scandir items in /etc/nebula/
-    items = sorted(os.scandir("/etc/nebula"), key=lambda x:x.name)
+    # Scandir items in /etc/nebula/enabled
+    if not os.path.exists("/etc/nebula/enabled"):
+        os.makedirs("/etc/nebula/enabled")
+    items = sorted(os.scandir("/etc/nebula/enabled"), key=lambda x:x.name)
     for item in items:
+        if not item.name.endswith(".yml"):
+            continue
         logger.debug("Loading unit file {}".format(item.name))
         with open(item.path, 'r') as f:
             try:
@@ -199,8 +203,75 @@ async def clean_children(sleeptime=5):
             # We do this every 5 seconds or so.
             await asyncio.sleep(sleeptime)
 
+# Try and load unit files.
 try:
     load_unit_files()
 except FileNotFoundError:
     logger.error("Cannot find unit files!")
     rescue()
+
+# Begin running units.
+async def run_units():
+    # Complex logic!
+    for name, data in unit_table.items():
+        failed = False
+        logger.info("Starting service {}...".format(name))
+        # Check 'commands'
+        cmds = data['commands']
+        # Get the options
+        options = cmds.get("options")
+        if "wait" in options:
+            wait = True
+        else:
+            wait = False
+
+        start_commands = cmds.get("start", [])
+        if isinstance(start_commands, str): start_commands = [start_commands]
+        # Loop over start commands.
+        processes = []
+        for command in start_commands:
+            # Spawn a new asyncio Process.
+            logger.debug("Running command: {}".format(command))
+            proc = await asyncio.create_subprocess_exec(*command.split(" "))
+            if wait:
+                try:
+                    ret = await proc.wait()
+                except asyncio.TimeoutError:
+                    logger.error("Command '{}' for unit {} timed out after 1m30s.".format(command, name))
+                    failed = True
+                    break
+                else:
+                    if ret != 0:
+                        logger.error("Command '{}' for unit {} failed with error code {}.".format(command, name, ret))
+                        failed = True
+                        break
+            else:
+                # Setup the table
+                processes.append((proc.pid, proc))
+        if failed:
+            logger.error("Unit {} failed to start.".format(name))
+        else:
+            logger.info("Started unit {}".format(name))
+            process_table[name] = processes
+
+
+# Define a main function.
+async def main():
+
+    def hup_handler(*args, **kwargs):
+        load_unit_files()
+
+    # Add signal handlers.
+    loop.add_signal_handler(1, hup_handler)
+    loop.add_signal_handler(10, hup_handler)
+
+    await run_units()
+    loop.create_task(clean_children())
+
+# Begin Nebula daemon.
+loop.create_task(main())
+try:
+    loop.run_forever()
+except KeyboardInterrupt:
+    loop.stop()
+loop.close()

@@ -5,4 +5,12 @@ name: udev
 description: udev - hardware device manager
 
 commands:
-  start: /usr/bin/udevd
+  options:
+    - wait
+  start:
+    # Arch-modprobe script, but repurposed for Nebula
+    - /etc/nebula/modprobe.sh
+    - udevd --daemon
+    - udevadm trigger --action=add --type subsystems
+    - udevadm trigger --action=add --type devices
+    - udevadm settle
