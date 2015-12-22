@@ -234,7 +234,7 @@ async def run_units():
         # Check 'commands'
         cmds = data['commands']
         # Get the options
-        options = cmds.get("options")
+        options = cmds.get("options", [])
         if "wait" in options:
             wait = True
         else:
