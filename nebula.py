@@ -113,10 +113,16 @@ with open("/etc/fstab") as fstab:
         if sp[1] == "/":
             # We've already mounted root. Ignore.
             continue
+        # Noauto
         if 'noauto' in sp[3]:
             continue
-        ret = subprocess.call("mount -v -t {type} -o {options} {fs} {mountpoint}".format(type=sp[2], options=sp[3],
-                                                                                fs=sp[0], mountpoint=sp[1]).split())
+        # Vboxsf
+        if sp[2] == 'vboxsf':
+            verb = ""
+        else:
+            verb = "-v"
+        ret = subprocess.call("mount {verb} -t {type} -o {options} {fs} {mountpoint}".format(type=sp[2], options=sp[3],
+                fs=sp[0], mountpoint=sp[1], verb=verb).split())
         if ret:
             print("Nebula - Unable to mount filesystem, skipping")
             continue
