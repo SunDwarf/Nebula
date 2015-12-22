@@ -148,7 +148,7 @@ logger.info("Early init completed - starting system")
 with open("/proc/cmdline", 'r') as f:
     sp = f.read().split(' ')
     sp = [s.replace('\n', '') for s in sp]
-    if 'rescue' in sp or 'nebula.rescue' in f:
+    if 'rescue' in sp or 'nebula.rescue' in sp:
         rescue()
 
 # Get the event loop.
