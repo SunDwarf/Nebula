@@ -3,8 +3,7 @@
 *Nebula* is an alternative PID 1 daemon inspired by the likes of sysvinit. It is written in Python 3 and is designed 
 with a single-file architecture in mind.
 
-###_**DISCLAIMER: THIS IS FOR FUN ONLY. DO NOT USE THIS ANYWHERE WHERE YOUR SYSTEM MATTERS, AS IT WILL CRASH AND BURN
- HORRIFICALLY.**_
+###_**DISCLAIMER: THIS IS FOR FUN ONLY. DO NOT USE THIS ANYWHERE WHERE YOUR SYSTEM MATTERS, AS IT WILL CRASH AND BURN HORRIFICALLY.**_
 
  - [Requirements](#requirements)
  - [Setup](#setup)

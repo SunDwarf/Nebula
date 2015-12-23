@@ -23,6 +23,7 @@ from collections import OrderedDict
 __version__ = (0, 0, 1)
 
 # Imports
+import threading
 import asyncio
 import yaml
 import logging
@@ -37,6 +38,25 @@ else:
     setproctitle.setproctitle("nebula")
 import ctypes
 import signal
+
+# We define our own EventLoopPolicy to create FastChildWatcher
+# this means asyncio can perform the hard work of child murdering
+# asyncio babysitting service - only £19.95 a hour
+# 100% effective
+
+
+class NebulaEventLoopPolicy(asyncio.unix_events._UnixDefaultEventLoopPolicy):
+     def _init_watcher(self):
+        with asyncio.events._lock:
+            if self._watcher is None:
+                # Cr
+                self._watcher = asyncio.FastChildWatcher()
+                if isinstance(threading.current_thread(),
+                              threading._MainThread):
+                    self._watcher.attach_loop(self._local._loop)
+
+asyncio.set_event_loop_policy(NebulaEventLoopPolicy())
+loop = asyncio.get_event_loop()
 
 # Load libc.
 libc = ctypes.CDLL("libc.so.6")
@@ -162,8 +182,7 @@ with open("/proc/cmdline", 'r') as f:
                 if len(i) >= 2:
                     if hasattr(logging, i[1]):
                         logger.setLevel(getattr(logging, i[1]))
-# Get the event loop.
-loop = asyncio.get_event_loop()
+
 
 # Clear screen
 print("\033c", end='')
@@ -204,31 +223,32 @@ def load_unit_files():
         except KeyError:
             logger.error("Unit file {} does not have a name specified!".format(item.name))
 
-
-# Define a lock for if we should clean children processes.
-ch_lock = asyncio.Lock()
-
-def clean_children(*args, **kwargs):
-    # Clean up surrogate children.
-    # This is for things like dhcpcd and other processes that fork to background without asking us permission.
-    # Loop until we can't clean any more children.
-    logger.debug("Called signal handler")
-    while True:
-        try:
-            reap = os.waitpid(-1, os.WNOHANG)
-            logger.debug("Reaped {}".format(reap))
-        except ChildProcessError:
-            # No more children to terminate
-            break
-
-
-
 # Try and load unit files.
 try:
     load_unit_files()
 except FileNotFoundError:
     logger.error("Cannot find unit files!")
     rescue()
+
+async def run_unit(commands, wait, name) -> list:
+    processes = []
+    failed = False
+    for command in commands:
+        # Spawn a new asyncio Process.
+        logger.debug("Running command: {}".format(command))
+        proc = await asyncio.create_subprocess_exec(*command.split(" "))
+        if wait:
+            exitstatus = await proc.wait()
+            if exitstatus != 0:
+                logger.error("Command '{}' for unit {} failed with error code {}.".format(command, name, ret))
+                failed = True
+                break
+        if failed:
+            break
+        else:
+            # Setup the table
+            processes.append((proc.pid, proc))
+    return processes, failed
 
 # Begin running units.
 async def run_units():
@@ -247,32 +267,28 @@ async def run_units():
 
         start_commands = cmds.get("start", [])
         if isinstance(start_commands, str): start_commands = [start_commands]
-        # Loop over start commands.
-        processes = []
-        for command in start_commands:
-            # Spawn a new asyncio Process.
-            logger.debug("Running command: {}".format(command))
-            proc = await asyncio.create_subprocess_exec(*command.split(" "))
-            if wait:
-                try:
-                    ret = await proc.wait()
-                except asyncio.TimeoutError:
-                    logger.error("Command '{}' for unit {} timed out after 1m30s.".format(command, name))
-                    failed = True
-                    break
-                else:
-                    if ret != 0:
-                        logger.error("Command '{}' for unit {} failed with error code {}.".format(command, name, ret))
-                        failed = True
-                        break
-            else:
-                # Setup the table
-                processes.append((proc.pid, proc))
+        processes, failed = await run_unit(start_commands, wait, name)
+
         if failed:
             logger.error("Unit {} failed to start.".format(name))
         else:
             logger.info("Started unit {}".format(name))
             process_table[name] = processes
+
+async def clean_children(*args, **kwargs):
+    # Clean up surrogate children.
+    # This is for things like dhcpcd and other processes that fork to background without asking us permission.
+    # Loop until we can't clean any more children.
+    logger.debug("Called signal handler")
+    try:
+        reap = os.waitpid(-1, os.WNOHANG)
+        if reap == (0,0):
+            # no more children
+            return
+        logger.debug("Reaped {}".format(reap))
+    except ChildProcessError:
+        # No more children to terminate
+        return
 
 
 # Define a main function.
@@ -284,7 +300,9 @@ async def main():
     # Add signal handlers.
     loop.add_signal_handler(1, hup_handler)
     loop.add_signal_handler(10, hup_handler)
-    loop.add_signal_handler(signal.SIGCHLD, clean_children)
+    # add our SIGCHLD handler.
+    # loop.add_signal_handler(signal.SIGCHLD, loop.create_task, clean_children())
+    # nvm asyncio
 
     await run_units()
 
