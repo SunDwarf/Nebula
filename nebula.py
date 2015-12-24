@@ -75,6 +75,9 @@ unit_table = OrderedDict()
 logger = logging.getLogger("nebula")
 logger.setLevel(logging.DEBUG)
 
+# Override asyncio's logger.
+asyncio.logger = logger
+
 ch = logging.StreamHandler(sys.stdout)
 
 # region logger
