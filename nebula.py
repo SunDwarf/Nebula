@@ -18,6 +18,10 @@
 # You should have received a copy of the GNU General Public License
 # along with Nebula.  If not, see <http://www.gnu.org/licenses/>.
 import os
+import sys
+if not os.getpid() == 1:
+    print("Nebula must be run as init.")
+    sys.exit(22)
 from collections import OrderedDict
 
 __version__ = (0, 0, 1)
@@ -28,7 +32,6 @@ import asyncio
 import yaml
 import logging
 import logging.handlers
-import sys
 import subprocess
 try:
     import setproctitle
@@ -36,8 +39,7 @@ except ImportError:
     print("Nebula - Setproctitle is not installed. Recommendation: install it.")
 else:
     setproctitle.setproctitle("nebula")
-import ctypes
-import signal
+
 
 # We define our own EventLoopPolicy to create FastChildWatcher
 # this means asyncio can perform the hard work of child murdering
@@ -58,8 +60,6 @@ class NebulaEventLoopPolicy(asyncio.unix_events._UnixDefaultEventLoopPolicy):
 asyncio.set_event_loop_policy(NebulaEventLoopPolicy())
 loop = asyncio.get_event_loop()
 
-# Load libc.
-libc = ctypes.CDLL("libc.so.6")
 
 # The process table is a master table for every process spawned by Nebula.
 # It is key-value of service => list of processes spawned.
@@ -75,14 +75,14 @@ unit_table = OrderedDict()
 logger = logging.getLogger("nebula")
 logger.setLevel(logging.DEBUG)
 
+ch = logging.StreamHandler(sys.stdout)
+
 # region logger
 # Method for setting up logger.
 # Called after mounting everything.
 def setup_logger():
     if not os.path.exists("/var/log/nebula"):
         os.makedirs("/var/log/nebula")
-
-    ch = logging.StreamHandler(sys.stdout)
 
     # Quick and dirty hack to fuck up logging easily.
     logging.addLevelName( logging.DEBUG, "\033[1;35m%s\033[1;0m" % logging.getLevelName(logging.DEBUG))
@@ -93,11 +93,11 @@ def setup_logger():
 
     format = logging.Formatter("[%(levelname)s] - %(message)s")
 
-
     ch.setFormatter(format)
     logger.addHandler(ch)
 
-    fh = logging.handlers.RotatingFileHandler("/var/log/nebula/nebula.log", maxBytes=(1048576*5), backupCount=7)
+    fh = logging.handlers.RotatingFileHandler("/var/log/nebula/nebula.log", maxBytes=(1048576*4), backupCount=7) # 4mb
+    fh.setFormatter(format)
     logger.addHandler(fh)
 # endregion
 
@@ -187,14 +187,35 @@ with open("/proc/cmdline", 'r') as f:
 # Clear screen
 print("\033c", end='')
 
+def parse_bash(lines: list) -> dict:
+    d = {}
+    for l in lines:
+        l = l.rstrip('\n')
+        sp = l.split("=")
+        if len(sp) != 2:
+            continue
+        d[sp[0]] = sp[1]
+    return d
+
 # region Setup
 
 logger.info("Setting hostname...")
 with open("/etc/hostname", 'a+') as f:
-    data = f.read().encode()
-    length = len(data)
-    libc.sethostname(data, ctypes.c_size_t(length))
+    f.seek(0)
+    data = f.read().replace('\n', '')
+    subprocess.call(["hostname", data])
 
+logger.info("Setting vconsole data...")
+with open("/etc/vconsole.conf", 'a+') as f:
+    f.seek(0)
+    data = f.read()
+    if data:
+        data = parse_bash(data.split('\n'))
+        # Call the appropriate commands.
+        if 'FONT' in data:
+            subprocess.call(["setfont", data['FONT']])
+        if 'KEYMAP' in data:
+            subprocess.call(["loadkeys", data['KEYMAP']])
 
 # endregion
 
@@ -254,7 +275,6 @@ async def run_unit(commands, wait, name) -> list:
 async def run_units():
     # Complex logic!
     for name, data in unit_table.items():
-        failed = False
         logger.info("Starting service {}...".format(name))
         # Check 'commands'
         cmds = data['commands']
@@ -275,21 +295,6 @@ async def run_units():
             logger.info("Started unit {}".format(name))
             process_table[name] = processes
 
-async def clean_children(*args, **kwargs):
-    # Clean up surrogate children.
-    # This is for things like dhcpcd and other processes that fork to background without asking us permission.
-    # Loop until we can't clean any more children.
-    logger.debug("Called signal handler")
-    try:
-        reap = os.waitpid(-1, os.WNOHANG)
-        if reap == (0,0):
-            # no more children
-            return
-        logger.debug("Reaped {}".format(reap))
-    except ChildProcessError:
-        # No more children to terminate
-        return
-
 
 # Define a main function.
 async def main():
@@ -305,6 +310,9 @@ async def main():
     # nvm asyncio
 
     await run_units()
+
+    # Tear down stdout logging.
+    logger.removeHandler(ch)
 
 # Begin Nebula daemon.
 loop.create_task(main())
