@@ -1,7 +1,7 @@
 ## Nebula - An Alternative Init System
 
 *Nebula* is an alternative PID 1 daemon inspired by the likes of sysvinit. It is written in Python 3 and is designed 
-with a single-file architecture in mind.
+with a "safe" architecture in mind - a central process, with scripts spawned off.
 
 ###_**DISCLAIMER: THIS IS FOR FUN ONLY. DO NOT USE THIS ANYWHERE WHERE YOUR SYSTEM MATTERS, AS IT WILL CRASH AND BURN HORRIFICALLY.**_
 

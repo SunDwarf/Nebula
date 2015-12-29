@@ -1,0 +1,9 @@
+# dbus unit
+
+name: dbus
+description: dbus - a messaging bus
+
+commands:
+  start:
+    - mkdir -p /run/dbus
+    - dbus-daemon --system --nofork --nopidfile

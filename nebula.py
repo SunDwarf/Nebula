@@ -10,7 +10,7 @@
 # the Free Software Foundation, either version 3 of the License, or
 # (at your option) any later version.
 #
-# Foobar is distributed in the hope that it will be useful,
+# Nebula is distributed in the hope that it will be useful,
 # but WITHOUT ANY WARRANTY; without even the implied warranty of
 # MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 # GNU General Public License for more details.
@@ -19,6 +19,9 @@
 # along with Nebula.  If not, see <http://www.gnu.org/licenses/>.
 import os
 import sys
+
+import time
+
 if not os.getpid() == 1:
     print("Nebula must be run as init.")
     sys.exit(22)
@@ -33,12 +36,27 @@ import yaml
 import logging
 import logging.handlers
 import subprocess
+import shlex
+import asyncio.log
+import tqdm
+import time
 try:
     import setproctitle
 except ImportError:
     print("Nebula - Setproctitle is not installed. Recommendation: install it.")
 else:
     setproctitle.setproctitle("nebula")
+
+import ctypes
+
+# Load libc.
+libc = ctypes.CDLL("libc.so.6")
+
+def sync():
+    libc.sync()
+
+def reboot(arg):
+    libc.reboot(arg)
 
 
 # We define our own EventLoopPolicy to create FastChildWatcher
@@ -60,7 +78,6 @@ class NebulaEventLoopPolicy(asyncio.unix_events._UnixDefaultEventLoopPolicy):
 asyncio.set_event_loop_policy(NebulaEventLoopPolicy())
 loop = asyncio.get_event_loop()
 
-
 # The process table is a master table for every process spawned by Nebula.
 # It is key-value of service => list of processes spawned.
 # This list consists of tuples with two values:
@@ -70,15 +87,22 @@ process_table = {}
 
 # The unit table consists of a dictionary that maps the unit name to the YAML dictionary.
 unit_table = OrderedDict()
+enabled_unit_table = OrderedDict()
 
 # Define a logger.
 logger = logging.getLogger("nebula")
 logger.setLevel(logging.DEBUG)
 
-# Override asyncio's logger.
-asyncio.logger = logger
+# Fuck up asyncio's logger
+asyncio.log.logger.setLevel(99999)
 
-ch = logging.StreamHandler(sys.stdout)
+logo = """ ______              _                 _
+|  ___ \            | |               | |
+| |   | |    ____   | | _     _   _   | |    ____
+| |   | |   / _  )  | || \   | | | |  | |   / _  |
+| |   | |  ( (/ /   | |_) )  | |_| |  | |  ( ( | |
+|_|   |_|   \____)  |____/    \____|  |_|   \_||_|
+                                                  """
 
 # region logger
 # Method for setting up logger.
@@ -96,17 +120,10 @@ def setup_logger():
 
     format = logging.Formatter("[%(levelname)s] - %(message)s")
 
-    ch.setFormatter(format)
-    logger.addHandler(ch)
-
     fh = logging.handlers.RotatingFileHandler("/var/log/nebula/nebula.log", maxBytes=(1048576*4), backupCount=7) # 4mb
     fh.setFormatter(format)
     logger.addHandler(fh)
 # endregion
-
-# Define a callback handler for the unix socket.
-async def connection_cb(reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
-    writer.close()
 
 # Define a rescue function.
 def rescue():
@@ -114,49 +131,22 @@ def rescue():
     print("Exit this shell to continue.")
     subprocess.call(["/bin/sh"])
 
+if not os.path.exists("/sbin/nebula.d/"):
+    print("Nebula safety scripts cannot be found. Panicing.")
+    rescue()
+    sys.exit(22)
+
+
+# Clear screen
+print("\033c", end='')
+
 print("Nebula version {} starting!".format('.'.join(map(str, __version__))))
 
-#region fstab
+# Run fstab.
+ret = subprocess.call(["/sbin/nebula.d/fstab.py"])
 
-# Load fstab.
-with open("/etc/fstab") as fstab:
-    print("Nebula - Mounting filesystems...")
-    # Parse and mount.
-    for n, line in enumerate(fstab.readlines()):
-        if line.startswith("#"):
-            continue
-        if line == "\n":
-            continue
-        n += 1
-        if '\t' in line:
-            sp = line.split('\t')
-        elif ' ' in line:
-            sp = line.split(' ')
-        else:
-            print("Nebula - Unable to parse line {} of fstab - skipping ({})".format(n, line))
-            continue
-        # Strip extras.
-        sp = [i.replace('\t', '').replace(' ', '') for i in sp]
-        # Mount.
-        if sp[1] == "/":
-            # We've already mounted root. Ignore.
-            continue
-        # Noauto
-        if 'noauto' in sp[3]:
-            continue
-        # Vboxsf
-        if sp[2] == 'vboxsf':
-            verb = ""
-        else:
-            verb = "-v"
-        ret = subprocess.call("mount {verb} -t {type} -o {options} {fs} {mountpoint}".format(type=sp[2], options=sp[3],
-                fs=sp[0], mountpoint=sp[1], verb=verb).split())
-        if ret:
-            print("Nebula - Unable to mount filesystem, skipping")
-            continue
-        # mounted
-
-# endregion
+# Mount tmpfs.
+subprocess.call("mount -v -t tmpfs tmpfs /tmp".split())
 
 # Remount root as read-write if we can.
 print("Nebula - Remounting filesystem...")
@@ -167,72 +157,48 @@ except subprocess.CalledProcessError:
     logger.error("Bailing out, you're on your own now.")
     rescue()
 
+# Disable kernel messages.
+subprocess.call("dmesg -n 1".split())
+
 setup_logger()
 
 # Begin initialization.
-logger.info("Early init completed - starting system")
-
+print("Early init completed - Starting nebula...")
 # Check our cmdline.
 with open("/proc/cmdline", 'r') as f:
     sp = f.read().split(' ')
     sp = [s.replace('\n', '') for s in sp]
     if 'rescue' in sp or 'nebula.rescue' in sp:
         rescue()
-    else:
-        for item in sp:
-            if 'nebula.loglevel' in item:
-                i = item.split('=')
-                if len(i) >= 2:
-                    if hasattr(logging, i[1]):
-                        logger.setLevel(getattr(logging, i[1]))
 
-
-# Clear screen
-print("\033c", end='')
-
-def parse_bash(lines: list) -> dict:
-    d = {}
-    for l in lines:
-        l = l.rstrip('\n')
-        sp = l.split("=")
-        if len(sp) != 2:
-            continue
-        d[sp[0]] = sp[1]
-    return d
+if not os.path.exists("/run/nebula"):
+    os.makedirs("/run/nebula")
 
 # region Setup
 
-logger.info("Setting hostname...")
+print("Setting hostname...")
 with open("/etc/hostname", 'a+') as f:
     f.seek(0)
     data = f.read().replace('\n', '')
     subprocess.call(["hostname", data])
 
-logger.info("Setting vconsole data...")
-with open("/etc/vconsole.conf", 'a+') as f:
-    f.seek(0)
-    data = f.read()
-    if data:
-        data = parse_bash(data.split('\n'))
-        # Call the appropriate commands.
-        if 'FONT' in data:
-            subprocess.call(["setfont", data['FONT']])
-        if 'KEYMAP' in data:
-            subprocess.call(["loadkeys", data['KEYMAP']])
+print("Setting vconsole...")
+subprocess.call(["/sbin/nebula.d/vconsole.py"])
 
 # endregion
 
-logger.info("Loading unit files...")
+print("Loading unit files...")
 
 def _reraise(err):
     raise err
 
 def load_unit_files():
+    error = False
     # Scandir items in /etc/nebula/enabled
     if not os.path.exists("/etc/nebula/enabled"):
         os.makedirs("/etc/nebula/enabled")
-    items = sorted(os.scandir("/etc/nebula/enabled"), key=lambda x:x.name)
-    for item in items:
+    items = sorted(os.scandir("/etc/nebula"), key=lambda x:x.name)
+    for item in tqdm.tqdm(items):
         if not item.name.endswith(".yml"):
             continue
         logger.debug("Loading unit file {}".format(item.name))
@@ -241,11 +207,16 @@ def load_unit_files():
                 data = yaml.safe_load(f)
             except Exception as e:
                 logger.error("Unable to load file {}: {}".format(item.name, e))
+                error = True
                 continue
         try:
             unit_table[data["name"]] = data
+            if os.path.exists("/etc/nebula/enabled/{}".format(item.name)):
+                enabled_unit_table[data["name"]] = data
         except KeyError:
             logger.error("Unit file {} does not have a name specified!".format(item.name))
+    if error:
+        print("Some unit files failed to load.")
 
 # Try and load unit files.
 try:
@@ -254,10 +225,13 @@ except FileNotFoundError:
     logger.error("Cannot find unit files!")
     rescue()
 
+
 async def run_unit(commands, wait, name) -> list:
     processes = []
     failed = False
+    tq = tqdm.tqdm(total=len(commands), nested=True, mininterval=0.0001)
     for command in commands:
+        tq.set_description(command.split(" ")[0])
         # Spawn a new asyncio Process.
         logger.debug("Running command: {}".format(command))
         proc = await asyncio.create_subprocess_exec(*command.split(" "))
@@ -267,17 +241,24 @@ async def run_unit(commands, wait, name) -> list:
                 logger.error("Command '{}' for unit {} failed with error code {}.".format(command, name, ret))
                 failed = True
                 break
+        tq.update(1)
+        time.sleep(0.005)
         if failed:
             break
         else:
             # Setup the table
             processes.append((proc.pid, proc))
+    tq.close()
+    time.sleep(0.005)
     return processes, failed
 
 # Begin running units.
 async def run_units():
+    any_failed = False
     # Complex logic!
-    for name, data in unit_table.items():
+    tq = tqdm.tqdm(enabled_unit_table)
+    for name, data in enabled_unit_table.items():
+        tq.set_description(name)
         logger.info("Starting service {}...".format(name))
         # Check 'commands'
         cmds = data['commands']
@@ -290,13 +271,43 @@ async def run_units():
 
         start_commands = cmds.get("start", [])
         if isinstance(start_commands, str): start_commands = [start_commands]
+
         processes, failed = await run_unit(start_commands, wait, name)
 
         if failed:
             logger.error("Unit {} failed to start.".format(name))
+            any_failed = True
         else:
             logger.info("Started unit {}".format(name))
             process_table[name] = processes
+        tq.update(1)
+        # Blocking sleep because asyncio fucks with tqdm
+        time.sleep(0.005)
+    # Don't remove the pretty progress bar.
+    #tq.close()
+    if any_failed:
+        print("Some units failed to start properly. See the log file for more information.")
+
+
+# Define a callback handler for the unix socket.
+async def connection_cb(reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
+    # Get data from the client.
+    data = await reader.read().decode()
+    # Because we're lazy, this is a plain text format.
+    data = shlex.split(data)
+    # Branch by command.
+    if data[0] == "start":
+        # Start a unit.
+        if len(data) < 2:
+            # Go fuck yourself
+            return
+        unit = data[1]
+        if not unit in unit_table:
+            # What are you doing
+            return
+        udata = unit_table[unit]
+        cmds = udata['commands']
+        start_commands = cmds.get("start")
 
 
 # Define a main function.
@@ -312,10 +323,14 @@ async def main():
     # loop.add_signal_handler(signal.SIGCHLD, loop.create_task, clean_children())
     # nvm asyncio
 
-    await run_units()
+    print("\033c", end='')
+    print(logo)
 
-    # Tear down stdout logging.
-    logger.removeHandler(ch)
+    print("Bringing system online...")
+    await run_units()
+    # Spawn agetty on tty1.
+    await asyncio.create_subprocess_exec("/usr/bin/agetty", "--noclear", "tty1", "38400", "linux")
+
 
 # Begin Nebula daemon.
 loop.create_task(main())
